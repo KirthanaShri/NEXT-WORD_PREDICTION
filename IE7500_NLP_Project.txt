@@ -1,0 +1,1054 @@
+from google.colab import drive
+drive.mount('/content/drive/')
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+import torch
+import tensorflow as tf
+
+from sklearn.model_selection import train_test_split
+
+from tensorflow.keras.preprocessing.text import Tokenizer
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Embedding, LSTM, Dense, GRU
+from keras.callbacks import EarlyStopping
+from tensorflow.keras import utils as np_utils
+
+from transformers import BertForMaskedLM, BertTokenizer
+from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.metrics import accuracy_score, f1_score
+from transformers import AdamW
+import torch.optim as optim
+from tqdm import tqdm
+
+from keras.callbacks import EarlyStopping
+from keras.optimizers import Adam
+from keras.preprocessing.sequence import pad_sequences
+from keras.preprocessing.text import Tokenizer
+
+import string
+import math
+import os
+import glob
+
+import nltk
+nltk.download('punkt')
+
+
+from gensim.models import Word2Vec
+
+!pip3 install mlflow
+import mlflow
+import mlflow.pytorch
+
+!pip install pyngrok
+from pyngrok import ngrok,conf
+import subprocess
+import getpass
+
+mlflow.set_tracking_uri("file:/content/drive/MyDrive/mlflow-runs")
+
+!ngrok authtoken 2epKCRxlJ3J0vmH2qLdC7LIGiia_QVT1k9URQQH71RdCQDFb
+
+subprocess.Popen(['mlflow', 'ui', '--backend-store-uri', '/content/drive/My\ Drive/mlflow-runs'])
+
+# Setup a tunnel to the UI
+ngrok_tunnel = ngrok.connect(addr="5000", proto="http", bind_tls=True)
+print("MLflow Tracking UI:", ngrok_tunnel.public_url)
+
+!mlflow ui --backend-store-uri /content/drive/My\ Drive/mlflow-runs --port 5000
+
+# Read the text file dataset
+with open("/content/drive/MyDrive/NLP_Project/ijcnlp_dailydialog/dialogues_text.txt", "r", encoding="utf-8") as file:
+    conversations = file.readlines()
+    # conversations = file.read().split('__eou__')
+
+# Read the text file dataset
+with open("/content/drive/MyDrive/NLP_Project/ijcnlp_dailydialog/dialogues_topic.txt", "r", encoding="utf-8") as file:
+    topics = file.readlines()
+    # conversations = file.read().split('__eou__')
+
+len(topics), len(conversations)
+
+data = [1 for _ in topics]
+s = pd.Series(data, index=topics)
+s.groupby(level=0).count()
+
+conversations = np.array(conversations)[np.array(topics)=='5\n'].tolist()
+len(conversations)
+
+# Preprocess the dataset
+processed_conversations = [conv.strip().rsplit(' ',1)[0].rstrip(string.punctuation+' ').lower().replace(' ’ ','’').replace('__eou__','') for conv in conversations]
+# processed_conversations = [conv.replace(string.punctuation,'') for conv in processed_conversations]
+# processed_conversations[2]
+# Define translation table to remove punctuation
+remove_punctuation_table = str.maketrans('', '', string.punctuation.replace('\'',''))
+
+# Remove punctuation from processed_conversations
+processed_conversations_no_punct = [conv.translate(remove_punctuation_table) for conv in processed_conversations]
+
+# Print processed_conversations without punctuation
+# processed_conversations_no_punct[2]
+
+processed_conversations_no_punct
+processed_conversations_no_punct[2]
+
+def preprocess(len_sequence , processed_conversations_no_punct):
+  conversations_1 = ' '
+  for conv in processed_conversations_no_punct:
+      conversations_1+= ' '+conv
+
+  # processed_conversations = conversations.split()[:20000]
+  conversations_2 = conversations_1.split()[:50000]
+  print(len(conversations_2))
+
+  length = len_sequence
+  processed_conversations=[]
+
+  for i in range(length, len(conversations_2)):
+    sequence = conversations_2[i-length:i]
+    lines = ' '.join(sequence)
+    processed_conversations.append(lines)
+
+  return processed_conversations
+
+
+processed_conversations = preprocess(5, processed_conversations_no_punct)
+
+processed_conversations = preprocess(5, processed_conversations)
+processed_conversations
+
+def evaluate_model(model, X_test, y_test, k=5):
+    # Evaluate the model on the test set
+    test_loss, test_accuracy = model.evaluate(X_test, y_test, verbose=0)
+
+    # Calculate perplexity
+    perplexity = np.exp(test_loss)
+
+    # Get model predictions
+    y_pred_probs = model.predict(X_test)
+    y_pred = np.argmax(y_pred_probs, axis=1)
+
+    # Calculate top-k accuracy
+    # Get indices of top-k predicted classes for each example
+    top_k_indices = np.argsort(y_pred_probs, axis=1)[:, -k:]
+
+    # Check if true class is among the top-k predicted classes for each example
+    true_class_indices = np.argmax(y_test, axis=1)
+    in_top_k = np.any(top_k_indices == true_class_indices[:, np.newaxis], axis=1)
+
+    # Calculate top-k accuracy
+    top_k_accuracy = np.mean(in_top_k)
+
+
+    # return test_loss, test_accuracy, perplexity, top_k_accuracy
+    return test_loss, test_accuracy, perplexity, top_k_accuracy
+
+
+
+    return top_k_accuracy
+
+
+def LSTM_model( num_layers = 1, units = 100, embedding_dim = 300, optimizer = 'adam', batch_size = 32, epochs = 30):
+
+
+  print(num_layers, units, embedding_dim, '/n')
+
+  #Logging all parameters
+  mlflow.log_param('batch_size',batch_size)
+  mlflow.log_param('layers',num_layers)
+  mlflow.log_param('units',units)
+  mlflow.log_param('embedding_dim',embedding_dim)
+  mlflow.log_param('epochs',epochs)
+  mlflow.log_param('optimizer',optimizer)
+  # mlflow.log_param('length',length)
+
+  # processed_conversations = preprocess(length, conversations)
+
+  # Data Preprocessing
+  tokenizer = Tokenizer(oov_token='<oov>')
+  tokenizer.fit_on_texts(processed_conversations)
+  vocab_size = len(tokenizer.word_index) + 1
+
+  sequences = tokenizer.texts_to_sequences(processed_conversations)
+  max_sequence_len = max([len(seq) for seq in sequences])
+  padded_sequences = pad_sequences(sequences, maxlen=max_sequence_len, padding='pre')
+
+  X = padded_sequences[:, :-1]
+  y = padded_sequences[:, -1]
+
+  # Convert target data to one-hot encoding
+  y = np_utils.to_categorical(y, num_classes=vocab_size)
+
+  # Splitting the data into train, validation, and test sets
+  X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.2, random_state=42)
+  X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
+
+  print("Training set shape:", X_train.shape, y_train.shape)
+  print("Validation set shape:", X_val.shape, y_val.shape)
+  print("Test set shape:", X_test.shape, y_test.shape)
+
+
+
+  if num_layers == 1:
+    model = tf.keras.Sequential([
+    tf.keras.layers.Embedding(vocab_size, embedding_dim, input_length=max_sequence_len - 1),
+    tf.keras.layers.LSTM(units),
+    tf.keras.layers.Dense(units, activation='relu'),
+    tf.keras.layers.Dense(vocab_size, activation='softmax')])
+
+  else:
+    model = tf.keras.Sequential([
+            tf.keras.layers.Embedding(vocab_size, embedding_dim, input_length=max_sequence_len - 1),
+            tf.keras.layers.LSTM(units, return_sequences=True),
+        ])
+    for i in range(num_layers-2):
+      model.add(tf.keras.layers.LSTM(units, return_sequences=True))
+    model.add(tf.keras.layers.LSTM(units))
+    model.add(tf.keras.layers.Dense(units, activation='relu'))
+    model.add(tf.keras.layers.Dense(vocab_size, activation='softmax'))
+
+  # Compile the model
+  model.compile(loss='categorical_crossentropy', optimizer=optimizer, metrics=['accuracy'])
+
+  # Define early stopping to prevent overfitting
+  early_stopping = EarlyStopping(patience=3, restore_best_weights=True)
+
+  # Train the model
+  with tf.device('/GPU:0'):  # Specify GPU device
+    history = model.fit(X_train, y_train, batch_size= batch_size , epochs=epochs, validation_data=(X_val, y_val), verbose=1, callbacks=[early_stopping])
+
+  # Log train and validation loss and accuracy for each epoch
+  for epoch in range(len(history.history['loss'])):
+      mlflow.log_metric("train_loss", history.history['loss'][epoch], epoch)
+      mlflow.log_metric("train_accuracy", history.history['accuracy'][epoch], epoch)
+      mlflow.log_metric("val_loss", history.history['val_loss'][epoch], epoch)
+      mlflow.log_metric("val_accuracy", history.history['val_accuracy'][epoch], epoch)
+
+
+
+  # Plot epoch vs train accuracy and validation accuracy
+  plt.figure(figsize=(10, 5))
+  plt.subplot(1, 2, 1)
+  plt.plot(history.history['accuracy'], label='Train Accuracy')
+  plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+  plt.xlabel('Epoch')
+  plt.ylabel('Accuracy')
+  plt.title('Epoch vs Train/Validation Accuracy')
+  plt.legend()
+  plt.grid(True)
+
+  # Plot epoch vs train loss and validation loss
+  plt.subplot(1, 2, 2)
+  plt.plot(history.history['loss'], label='Train Loss')
+  plt.plot(history.history['val_loss'], label='Validation Loss')
+  plt.xlabel('Epoch')
+  plt.ylabel('Loss')
+  plt.title('Epoch vs Train/Validation Loss')
+  plt.legend()
+  plt.grid(True)
+
+  # Adjust layout and save the plot as an image file
+  plt.tight_layout()
+  plt.savefig("epoch_vs_metrics.png")
+
+  # Log the plot to MLflow
+  mlflow.log_artifact("epoch_vs_metrics.png")
+
+  # Evaluate the model on the test set
+  test_loss, test_accuracy, perplexity, top_k_accuracy = evaluate_model(model, X_test, y_test)
+
+
+  print("Test Loss:", test_loss)
+  print("Test Accuracy:", test_accuracy)
+  print("Perplexity:", perplexity)
+  print("Top-5 Accuracy:", top_k_accuracy)
+
+  # Log test metrics
+  mlflow.log_metric("test_loss", test_loss)
+  mlflow.log_metric("test_accuracy", test_accuracy)
+  mlflow.log_metric("perplexity", perplexity)
+  mlflow.log_metric("top_5_accuracy", top_k_accuracy)
+
+
+# mlflow.create_experiment('LSTM_fullconv_scratchemb_early')
+
+mlflow.set_experiment('LSTM_fullconv_scratchemb_early')
+
+for epoch in [30]:
+  for batch_size in [32, 128]:
+    for optimizer in ['adam']:
+      for embedding_dim in [300, 500]:
+        for num_layers in [1,8]:
+          for units in [100,200]:
+            # Start MLflow run
+            with mlflow.start_run():
+              # expt_id = '%d%d%d%d'% (int(num_layers),int(units),int(embedding_dim),int(batch_size))
+              LSTM_model(num_layers = num_layers, units = units, embedding_dim = embedding_dim, batch_size = batch_size, epochs = epoch, optimizer = optimizer)
+
+
+
+mlflow.end_run()
+
+# mlflow.create_experiment('Rel_embscratch_withrelu')
+
+mlflow.set_experiment('Rel_embscratch_withrelu')
+
+for batch_size in [32]:
+  for num_layers in [1,8]:
+    for embedding_dim in [10]:
+      for units in [100,200]:
+        with mlflow.start_run():
+          LSTM_model(num_layers = num_layers,
+                     units = units,
+                      embedding_dim = embedding_dim,
+                     batch_size = batch_size)
+
+
+
+#Without Relu
+def LSTM_model( num_layers = 1, units = 100, embedding_dim = 300, optimizer = 'adam', batch_size = 32, epochs = 30):
+
+
+  print(num_layers, units, embedding_dim, '/n')
+
+  #Logging all parameters
+  mlflow.log_param('batch_size',batch_size)
+  mlflow.log_param('layers',num_layers)
+  mlflow.log_param('units',units)
+  mlflow.log_param('embedding_dim',embedding_dim)
+  mlflow.log_param('epochs',epochs)
+  mlflow.log_param('optimizer',optimizer)
+  # mlflow.log_param('length',length)
+
+  # processed_conversations = preprocess(length, conversations)
+
+  # Data Preprocessing
+  tokenizer = Tokenizer(oov_token='<oov>')
+  tokenizer.fit_on_texts(processed_conversations)
+  vocab_size = len(tokenizer.word_index) + 1
+
+  sequences = tokenizer.texts_to_sequences(processed_conversations)
+  max_sequence_len = max([len(seq) for seq in sequences])
+  padded_sequences = pad_sequences(sequences, maxlen=max_sequence_len, padding='pre')
+
+  X = padded_sequences[:, :-1]
+  y = padded_sequences[:, -1]
+
+  # Convert target data to one-hot encoding
+  y = np_utils.to_categorical(y, num_classes=vocab_size)
+
+  # Splitting the data into train, validation, and test sets
+  X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.2, random_state=42)
+  X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
+
+  print("Training set shape:", X_train.shape, y_train.shape)
+  print("Validation set shape:", X_val.shape, y_val.shape)
+  print("Test set shape:", X_test.shape, y_test.shape)
+
+
+
+  if num_layers == 1:
+    model = tf.keras.Sequential([
+    tf.keras.layers.Embedding(vocab_size, embedding_dim, input_length=max_sequence_len - 1),
+    tf.keras.layers.LSTM(units),
+    tf.keras.layers.Dense(vocab_size, activation='softmax')])
+
+  else:
+    model = tf.keras.Sequential([
+            tf.keras.layers.Embedding(vocab_size, embedding_dim, input_length=max_sequence_len - 1),
+            tf.keras.layers.LSTM(units, return_sequences=True),
+        ])
+    for i in range(num_layers-2):
+      model.add(tf.keras.layers.LSTM(units, return_sequences=True))
+    model.add(tf.keras.layers.LSTM(units))
+    model.add(tf.keras.layers.Dense(vocab_size, activation='softmax'))
+
+  # Compile the model
+  model.compile(loss='categorical_crossentropy', optimizer=optimizer, metrics=['accuracy'])
+
+  # Define early stopping to prevent overfitting
+  early_stopping = EarlyStopping(patience=3, restore_best_weights=True)
+
+  # Train the model
+  with tf.device('/GPU:0'):  # Specify GPU device
+    history = model.fit(X_train, y_train, batch_size= batch_size , epochs=epochs, validation_data=(X_val, y_val), verbose=1, callbacks=[early_stopping])
+
+  # Log train and validation loss and accuracy for each epoch
+  for epoch in range(len(history.history['loss'])):
+      mlflow.log_metric("train_loss", history.history['loss'][epoch], epoch)
+      mlflow.log_metric("train_accuracy", history.history['accuracy'][epoch], epoch)
+      mlflow.log_metric("val_loss", history.history['val_loss'][epoch], epoch)
+      mlflow.log_metric("val_accuracy", history.history['val_accuracy'][epoch], epoch)
+
+
+
+  # Plot epoch vs train accuracy and validation accuracy
+  plt.figure(figsize=(10, 5))
+  plt.subplot(1, 2, 1)
+  plt.plot(history.history['accuracy'], label='Train Accuracy')
+  plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+  plt.xlabel('Epoch')
+  plt.ylabel('Accuracy')
+  plt.title('Epoch vs Train/Validation Accuracy')
+  plt.legend()
+  plt.grid(True)
+
+  # Plot epoch vs train loss and validation loss
+  plt.subplot(1, 2, 2)
+  plt.plot(history.history['loss'], label='Train Loss')
+  plt.plot(history.history['val_loss'], label='Validation Loss')
+  plt.xlabel('Epoch')
+  plt.ylabel('Loss')
+  plt.title('Epoch vs Train/Validation Loss')
+  plt.legend()
+  plt.grid(True)
+
+  # Adjust layout and save the plot as an image file
+  plt.tight_layout()
+  plt.savefig("epoch_vs_metrics.png")
+
+  # Log the plot to MLflow
+  mlflow.log_artifact("epoch_vs_metrics.png")
+
+  # Evaluate the model on the test set
+  test_loss, test_accuracy, perplexity, top_k_accuracy = evaluate_model(model, X_test, y_test)
+
+
+  print("Test Loss:", test_loss)
+  print("Test Accuracy:", test_accuracy)
+  print("Perplexity:", perplexity)
+  print("Top-5 Accuracy:", top_k_accuracy)
+
+  # Log test metrics
+  mlflow.log_metric("test_loss", test_loss)
+  mlflow.log_metric("test_accuracy", test_accuracy)
+  mlflow.log_metric("perplexity", perplexity)
+  mlflow.log_metric("top_5_accuracy", top_k_accuracy)
+
+
+# mlflow.create_experiment('Rel_embscratch_withoutrelu')
+
+mlflow.set_experiment('Rel_embscratch_withoutrelu')
+
+for batch_size in [32]:
+  for num_layers in [5]:
+    for embedding_dim in [10, 100, 300, 500]:
+      for units in [100, 200]:
+        with mlflow.start_run():
+          LSTM_model(num_layers = num_layers,
+                     units = units,
+                      embedding_dim = embedding_dim,
+                     batch_size = batch_size)
+
+
+
+# mlflow.create_experiment('check_rel_1')
+
+mlflow.set_experiment('check_rel_1')
+LSTM_model(num_layers = 1, units = 100, embedding_dim = 500, optimizer = 'adam', batch_size = 32, epochs = 15)
+
+# mlflow.create_experiment('check_rel_1')
+
+mlflow.set_experiment('check_rel_1')
+LSTM_model(num_layers = 1, units = 100, embedding_dim = 500, optimizer = 'adam', batch_size = 32, epochs = 15)
+
+# mlflow.create_experiment('LSTM_fullconv_scratchemb_early')
+
+mlflow.set_experiment('LSTM_fullconv_scratchemb_early')
+
+for epoch in [30]:
+  for batch_size in [32]:
+    for optimizer in ['adam']:
+      for embedding_dim in [300]:
+        for num_layers in [1]:
+          for units in [100]:
+            # Start MLflow run
+            with mlflow.start_run():
+              # expt_id = '%d%d%d%d'% (int(num_layers),int(units),int(embedding_dim),int(batch_size))
+              LSTM(num_layers = num_layers, units = units, embedding_dim = embedding_dim, batch_size = batch_size, epochs = epoch, optimizer = optimizer)
+
+
+
+
+# Data Preprocessing
+tokenizer = Tokenizer(oov_token='<oov>')
+tokenizer.fit_on_texts(processed_conversations)
+vocab_size = len(tokenizer.word_index) + 1
+
+sequences = tokenizer.texts_to_sequences(processed_conversations)
+
+
+max_sequence_len = max([len(seq) for seq in sequences])
+padded_sequences = pad_sequences(sequences, maxlen=max_sequence_len, padding='pre')
+
+X = padded_sequences[:, :-1]
+y = padded_sequences[:, -1]
+
+# Convert target data to one-hot encoding
+y = np_utils.to_categorical(y, num_classes=vocab_size)
+
+
+# Splitting the data into train, validation, and test sets
+X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.2, random_state=42)
+X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
+
+print("Training set shape:", X_train.shape, y_train.shape)
+print("Validation set shape:", X_val.shape, y_val.shape)
+print("Test set shape:", X_test.shape, y_test.shape)
+
+def LSTM_with_Word2Vec(num_layers = 1, units = 100, embedding_dim = 10, optimizer = 'adam', batch_size = 32, epochs = 30, window=5, sg=1):
+
+  # Convert each conversation string into a list of words
+  tokenized_conversations = [conversation.split() for conversation in processed_conversations]
+  # Train Word2Vec model
+  word2vec_model = Word2Vec(sentences=tokenized_conversations, vector_size=embedding_dim, window=window, min_count=1, sg=sg)
+
+
+  # #Logging all parameters
+  mlflow.log_param('batch_size',batch_size)
+  mlflow.log_param('layers',num_layers)
+  mlflow.log_param('units',units)
+  mlflow.log_param('embedding_dim',embedding_dim)
+  mlflow.log_param('epochs',epochs)
+  mlflow.log_param('optimizer',optimizer)
+  mlflow.log_param('window',window)
+  mlflow.log_param('sg',sg)
+
+  # Prepare embedding matrix
+  embedding_matrix = np.zeros((vocab_size, embedding_dim))
+  for word, i in tokenizer.word_index.items():
+      if word in word2vec_model.wv:
+          embedding_matrix[i] = word2vec_model.wv[word]
+
+  if num_layers == 1:
+    model = tf.keras.Sequential([
+    tf.keras.layers.Embedding(vocab_size, embedding_dim, weights=[embedding_matrix],input_length=max_sequence_len - 1 , trainable=False),
+    tf.keras.layers.LSTM(units),
+    tf.keras.layers.Dense(vocab_size, activation='softmax')])
+
+  else:
+    model = tf.keras.Sequential([
+            tf.keras.layers.Embedding(vocab_size, embedding_dim, weights=[embedding_matrix], input_length=max_sequence_len - 1, trainable=False),
+            tf.keras.layers.LSTM(units, return_sequences=True),
+        ])
+    for i in range(num_layers-2):
+      model.add(tf.keras.layers.LSTM(units, return_sequences=True))
+    model.add(tf.keras.layers.LSTM(units))
+    model.add(tf.keras.layers.Dense(vocab_size, activation='softmax'))
+
+  # Compile the model
+  model.compile(loss='categorical_crossentropy', optimizer=optimizer, metrics=['accuracy'])
+
+  # Define early stopping to prevent overfitting
+  early_stopping = EarlyStopping(patience=3, restore_best_weights=True)
+
+  # Train the model
+  with tf.device('/GPU:0'):  # Specify GPU device
+    history = model.fit(X_train, y_train, batch_size= batch_size , epochs=epochs, validation_data=(X_val, y_val), verbose=1, callbacks=[early_stopping])
+
+  # Log train and validation loss and accuracy for each epoch
+  for epoch in range(len(history.history['loss'])):
+      mlflow.log_metric("train_loss", history.history['loss'][epoch], epoch)
+      mlflow.log_metric("train_accuracy", history.history['accuracy'][epoch], epoch)
+      mlflow.log_metric("val_loss", history.history['val_loss'][epoch], epoch)
+      mlflow.log_metric("val_accuracy", history.history['val_accuracy'][epoch], epoch)
+
+
+
+  # Plot epoch vs train accuracy and validation accuracy
+  plt.figure(figsize=(10, 5))
+  plt.subplot(1, 2, 1)
+  plt.plot(history.history['accuracy'], label='Train Accuracy')
+  plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+  plt.xlabel('Epoch')
+  plt.ylabel('Accuracy')
+  plt.title('Epoch vs Train/Validation Accuracy')
+  plt.legend()
+  plt.grid(True)
+
+  # Plot epoch vs train loss and validation loss
+  plt.subplot(1, 2, 2)
+  plt.plot(history.history['loss'], label='Train Loss')
+  plt.plot(history.history['val_loss'], label='Validation Loss')
+  plt.xlabel('Epoch')
+  plt.ylabel('Loss')
+  plt.title('Epoch vs Train/Validation Loss')
+  plt.legend()
+  plt.grid(True)
+
+  # Adjust layout and save the plot as an image file
+  plt.tight_layout()
+  plt.savefig("epoch_vs_metrics.png")
+
+  # Log the plot to MLflow
+  mlflow.log_artifact("epoch_vs_metrics.png")
+
+  # Evaluate the model on the test set
+  test_loss, test_accuracy, perplexity, top_k_accuracy= evaluate_model(model, X_test, y_test)
+
+
+  print("Test Loss:", test_loss)
+  print("Test Accuracy:", test_accuracy)
+  print("Perplexity:", perplexity)
+  print("Top-5 Accuracy:", top_k_accuracy)
+
+  # # Log test metrics
+  mlflow.log_metric("test_loss", test_loss)
+  mlflow.log_metric("test_accuracy", test_accuracy)
+  mlflow.log_metric("perplexity", perplexity)
+  mlflow.log_metric("top_5_accuracy", top_k_accuracy)
+
+
+mlflow.end_run()
+
+# mlflow.create_experiment('Rel_word2vec_withoutrelu')
+mlflow.set_experiment('Rel_word2vec_withoutrelu')
+
+
+for embedding_dim in [100, 300, 500]:
+  for num_layers in [5]:
+    for units in [100, 200]:
+      for window in [2]:
+        for sg in [1,0]:
+          with mlflow.start_run():
+            LSTM_with_Word2Vec(embedding_dim=embedding_dim,
+                               num_layers=num_layers,
+                               units=units,
+                               window=window,
+                               sg = sg)
+
+
+
+LSTM_with_Word2Vec(embedding_dim=500,
+                               num_layers=1,
+                               units=100,
+                               window=5)
+
+mlflow.set_experiment('check_rel1')
+LSTM_with_Word2Vec(embedding_dim=500,
+                               num_layers=1,
+                               units=100,
+                               window=5)
+
+# mlflow.create_experiment('LSTM_fullconv_word2vec')
+
+mlflow.set_experiment('LSTM_fullconv_tword2vec')
+
+for batch_size in [32]:
+  for embedding_dim in [300, 500]:
+    for num_layers in [1,3]:
+      for units in [150]:
+        for window in [5, 8]:
+          for sg in [1]:
+            # Start MLflow run
+            with mlflow.start_run():
+                print(embedding_dim,',',num_layers, ',',window)
+                LSTM_with_Word2Vec(embedding_dim=embedding_dim,
+                               num_layers=num_layers,
+                               units=units,
+                               window=window)
+
+
+
+
+
+LSTM_with_Word2Vec(embedding_dim=300) #Rel_Conv
+
+LSTM_with_Word2Vec(embedding_dim=300)       #Full Conversation
+
+
+
+embeddings_index = dict()
+f = open('/content/glove.6B.50d.txt',mode='rt',encoding='utf-8')
+for line in f:
+    values = line.split()
+    words = values[0]
+    coefs = np.asarray(values[1:],dtype='float32')
+    embeddings_index[words] = coefs
+f.close()
+
+print('Loaded word vectors',len(embeddings_index)) #Loaded word vectors 400000
+
+
+def LSTM_model_glove(num_layers = 1, units = 100, embedding_dim = 50, optimizer = 'adam', batch_size = 32, epochs = 30, embeddings_index=embeddings_index):
+
+
+  # print(length, num_layers, units, embedding_dim, '/n')
+
+  #Logging all parameters
+  mlflow.log_param('batch_size',batch_size)
+  mlflow.log_param('layers',num_layers)
+  mlflow.log_param('units',units)
+  mlflow.log_param('embedding_dim',embedding_dim)
+  mlflow.log_param('epochs',epochs)
+  mlflow.log_param('optimizer',optimizer)
+  # mlflow.log_param('length',length)
+
+  # processed_conversations = preprocess(length, conversations)
+
+  # Data Preprocessing
+  tokenizer = Tokenizer(oov_token='<oov>')
+  tokenizer.fit_on_texts(processed_conversations)
+  vocab_size = len(tokenizer.word_index) + 1
+
+  sequences = tokenizer.texts_to_sequences(processed_conversations)
+  max_sequence_len = max([len(seq) for seq in sequences])
+  padded_sequences = pad_sequences(sequences, maxlen=max_sequence_len, padding='pre')
+
+  X = padded_sequences[:, :-1]
+  y = padded_sequences[:, -1]
+
+  # Convert target data to one-hot encoding
+  y = np_utils.to_categorical(y, num_classes=vocab_size)
+
+  # Splitting the data into train, validation, and test sets
+  X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.2, random_state=42)
+  X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
+
+  print("Training set shape:", X_train.shape, y_train.shape)
+  print("Validation set shape:", X_val.shape, y_val.shape)
+  print("Test set shape:", X_test.shape, y_test.shape)
+
+
+  # Prepare embedding matrix
+  embedding_matrix = np.zeros((vocab_size, embedding_dim))
+  for word,i in tokenizer.word_index.items():
+      embedding_vector = embeddings_index.get(word)
+      if(embedding_vector is not None):
+          embedding_matrix[i] = embedding_vector
+
+
+
+  if num_layers == 1:
+    model = tf.keras.Sequential([
+    tf.keras.layers.Embedding(vocab_size, embedding_dim, weights=[embedding_matrix],input_length=max_sequence_len - 1 , trainable=False),
+    tf.keras.layers.LSTM(units),
+    tf.keras.layers.Dense(units, activation='relu'),
+    tf.keras.layers.Dense(vocab_size, activation='softmax')])
+
+  else:
+    model = tf.keras.Sequential([
+            tf.keras.layers.Embedding(vocab_size, embedding_dim, weights=[embedding_matrix],input_length=max_sequence_len - 1 , trainable=False),
+            tf.keras.layers.LSTM(units, return_sequences=True),
+        ])
+    for i in range(num_layers-2):
+      model.add(tf.keras.layers.LSTM(units, return_sequences=True))
+    model.add(tf.keras.layers.LSTM(units))
+    model.add(tf.keras.layers.Dense(units, activation='relu'))
+    model.add(tf.keras.layers.Dense(vocab_size, activation='softmax'))
+
+  # Compile the model
+  model.compile(loss='categorical_crossentropy', optimizer=optimizer, metrics=['accuracy'])
+
+  # Define early stopping to prevent overfitting
+  early_stopping = EarlyStopping(patience=8, restore_best_weights=True)
+
+  # Train the model
+  with tf.device('/GPU:0'):  # Specify GPU device
+    history = model.fit(X_train, y_train, batch_size= batch_size , epochs=epochs, validation_data=(X_val, y_val), verbose=1, callbacks=[early_stopping])
+
+  # Log train and validation loss and accuracy for each epoch
+  for epoch in range(len(history.history['loss'])):
+      mlflow.log_metric("train_loss", history.history['loss'][epoch], epoch)
+      mlflow.log_metric("train_accuracy", history.history['accuracy'][epoch], epoch)
+      mlflow.log_metric("val_loss", history.history['val_loss'][epoch], epoch)
+      mlflow.log_metric("val_accuracy", history.history['val_accuracy'][epoch], epoch)
+
+
+
+  # Plot epoch vs train accuracy and validation accuracy
+  plt.figure(figsize=(10, 5))
+  plt.subplot(1, 2, 1)
+  plt.plot(history.history['accuracy'], label='Train Accuracy')
+  plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+  plt.xlabel('Epoch')
+  plt.ylabel('Accuracy')
+  plt.title('Epoch vs Train/Validation Accuracy')
+  plt.legend()
+  plt.grid(True)
+
+  # Plot epoch vs train loss and validation loss
+  plt.subplot(1, 2, 2)
+  plt.plot(history.history['loss'], label='Train Loss')
+  plt.plot(history.history['val_loss'], label='Validation Loss')
+  plt.xlabel('Epoch')
+  plt.ylabel('Loss')
+  plt.title('Epoch vs Train/Validation Loss')
+  plt.legend()
+  plt.grid(True)
+
+  # Adjust layout and save the plot as an image file
+  plt.tight_layout()
+  plt.savefig("epoch_vs_metrics.png")
+
+  # Log the plot to MLflow
+  mlflow.log_artifact("epoch_vs_metrics.png")
+
+  # Evaluate the model on the test set
+  test_loss, test_accuracy, perplexity, top_k_accuracy = evaluate_model(model, X_test, y_test)
+
+
+  print("Test Loss:", test_loss)
+  print("Test Accuracy:", test_accuracy)
+  print("Perplexity:", perplexity)
+  print("Top-5 Accuracy:", top_k_accuracy)
+
+  # Log test metrics
+  mlflow.log_metric("test_loss", test_loss)
+  mlflow.log_metric("test_accuracy", test_accuracy)
+  mlflow.log_metric("perplexity", perplexity)
+  mlflow.log_metric("top_5_accuracy", top_k_accuracy)
+
+
+#MLFlow Experiments
+
+# mlflow.create_experiment('Rel_glove')
+
+mlflow.set_experiment('Rel_glove')
+
+for num_layers in [1,5]:
+  for units in [100, 200]:
+    for batch_size in [32, 128]:
+      with mlflow.start_run():
+        print('Layers:',num_layers, 'Units:',units, 'Batch:', batch_size)
+        LSTM_model_glove(num_layers = num_layers, units = units, batch_size = batch_size)
+
+#MLFlow Experiments
+
+mlflow.create_experiment('fullconv_glove_utter')
+
+mlflow.set_experiment('fullconv_glove_utter')
+
+for num_layers in [1,5]:
+  for units in [100, 200]:
+    for batch_size in [32, 128]:
+      with mlflow.start_run():
+        print('Layers:',num_layers, 'Units:',units, 'Batch:', batch_size)
+        LSTM_model_glove(num_layers = num_layers, units = units, batch_size = batch_size)
+
+# mlflow.create_experiment('check_rel_glove_utter')
+
+mlflow.set_experiment('check_rel_glove_utter')
+LSTM_model_glove(5,1,100,200)
+
+sequences=[]
+for conv in conversations:
+  for item in conv.split('__eou__'):
+    sequences.append(item)
+sequences
+
+# Define translation table to remove punctuation
+remove_punctuation_table = str.maketrans('', '', string.punctuation)
+
+# Remove punctuation from processed_conversations
+processed_conversations = [conv.lower().translate(remove_punctuation_table).strip().replace(' ’ ','’') for conv in sequences]
+
+
+processed_conversations[:10]
+
+len(processed_conversations)
+
+processed_conversations = [conv for conv in processed_conversations if len(conv.split())>2]
+
+# Data Preprocessing
+tokenizer = Tokenizer(oov_token='<oov>')
+tokenizer.fit_on_texts(processed_conversations)
+vocab_size = len(tokenizer.word_index) + 1
+print(vocab_size)
+
+sequences = tokenizer.texts_to_sequences(processed_conversations)
+
+
+max_sequence_len = max([len(seq) for seq in sequences])
+padded_sequences = pad_sequences(sequences, maxlen=max_sequence_len, padding='pre')
+
+X = padded_sequences[:, :-1]
+y = padded_sequences[:, -1]
+
+# Splitting the data into train, validation, and test sets
+X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.2, random_state=42)
+X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
+
+print("Training set shape:", X_train.shape, y_train.shape)
+print("Validation set shape:", X_val.shape, y_val.shape)
+print("Test set shape:", X_test.shape, y_test.shape)
+
+# mlflow.create_experiment('check_rel_glove')
+
+mlflow.set_experiment('check_rel_glove')
+LSTM_model_glove(5,1,200,200)
+
+# Read the text file dataset
+with open("/content/drive/MyDrive/NLP_Project/ijcnlp_dailydialog/dialogues_text.txt", "r", encoding="utf-8") as file:
+    conversations = file.readlines()
+
+# Preprocess the dataset
+processed_conversations = [conv.strip().rsplit(' ',1)[0].rstrip(string.punctuation+' ').lower().replace(' ’ ','’').replace('__eou__','') for conv in conversations]
+# processed_conversations = [conv.replace(string.punctuation,'') for conv in processed_conversations]
+# processed_conversations[2]
+# Define translation table to remove punctuation
+remove_punctuation_table = str.maketrans('', '', string.punctuation.replace('\'',''))
+
+# Remove punctuation from processed_conversations
+processed_conversations_no_punct = [conv.translate(remove_punctuation_table) for conv in processed_conversations]
+
+# Print processed_conversations without punctuation
+# processed_conversations_no_punct[2]
+
+processed_conversations = processed_conversations_no_punct
+processed_conversations[2]
+
+df = pd.read_csv('/content/runs-7.csv')
+df.columns
+
+df = df[['embedding_dim', 'units', 'layers','perplexity']].dropna()
+df.sort_values('perplexity')
+
+title = ' '
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.path import Path
+import matplotlib.patches as patches
+import matplotlib.cm as cm
+
+def parallel_plot(table4: pd.DataFrame, acc_col: str, title: str, vars_names, my_vars_names):
+    """
+    acc_col: col name of the accuracy column, eg., "acc_1", "acc_2"
+    """
+
+    df_plot = table4[['embedding_dim', 'units', 'layers', 'perplexity']]
+    df_plot.columns = ["Embedding Dimension", "Units", "Layers", "Perplexity"]
+    df_plot = df_plot.reset_index(drop=True)
+
+    order_map = {}
+    for c in ["Embedding Dimension", "Units", "Layers", "Perplexity"]:
+        tmp_ = list(df_plot[c].unique())
+        try:
+            tmp_2 = sorted(list(map(float, tmp_)))
+            tmp_2 = sorted(list(map(float, tmp_)))
+            n_unique = list(map(str, tmp_2))
+        except:
+            n_unique = sorted(tmp_)
+        tmp = {x:i for i,x in enumerate(n_unique)}
+        order_map[c] = tmp.copy()
+
+    parallel_plot_matlab(df_plot, ["Embedding Dimension", "Units", "Layers", "Perplexity"], order_map, title)
+    return df_plot
+
+def parallel_plot_matlab(df_plot, my_vars_names, order_map, title):
+    # Convert to numeric matrix
+    ym = []
+    dics_vars = []
+    for v, var in enumerate(my_vars_names):
+        if df_plot[var].dtype.kind not in ["i", "u", "f"]:
+            dic_var = order_map[var]
+            dics_vars += [dic_var]
+            ym += [[dic_var[i] for i in df_plot[var].tolist()]]
+        else:
+            ym += [df_plot[var].tolist()]
+    ym = np.array(ym).T
+
+    # Normalize 'Accuracy'
+    metric = df_plot['Perplexity'].values
+    metric_normalized = (metric - metric.min()) / (metric.max() - metric.min())
+
+    # Padding
+    ymins = ym.min(axis=0)
+    ymaxs = ym.max(axis=0)
+    dys = ymaxs - ymins
+    ymins -= dys * 0.05
+    ymaxs += dys * 0.05
+
+    # Reverse some axes for better visual
+    axes_to_reverse = [0, 1, 2, 3]
+    for a in axes_to_reverse:
+        pass
+
+    # Adjust to the main axis
+    zs = np.zeros_like(ym)
+    zs[:, 0] = ym[:, 0]
+    zs[:, 1:] = (ym[:, 1:] - ymins[1:]) / dys[1:] * dys[0] + ymins[0]
+
+    # Plot
+    fig, host_ax = plt.subplots(figsize=(10, 6), tight_layout=True)
+
+    # Create a continuous colormap (e.g., from light blue to dark blue)
+    cmap_continuous = plt.cm.BrBG
+
+    # Make the axes
+    axes = [host_ax] + [host_ax.twinx() for i in range(ym.shape[1] - 1)]
+    dic_count = 0
+    for i, ax in enumerate(axes):
+        ax.set_ylim(bottom=ymins[i], top=ymaxs[i])
+        ax.spines.top.set_visible(False)
+        ax.spines.bottom.set_visible(False)
+        ax.ticklabel_format(style='plain')
+        if ax != host_ax:
+            ax.spines.left.set_visible(False)
+            ax.yaxis.set_ticks_position("right")
+            ax.spines.right.set_position(("axes", i / (ym.shape[1] - 1)))
+        if df_plot.iloc[:, i].dtype.kind not in ["i", "u", "f"]:
+            dic_var_i = dics_vars[dic_count]
+            ax.set_yticks(range(len(dic_var_i)))
+            ax.set_yticklabels([key_val for key_val in dics_vars[dic_count].keys()], fontsize=20,  verticalalignment='bottom')
+            dic_count += 1
+    host_ax.set_xlim(left=0, right=ym.shape[1] - 1)
+    host_ax.set_xticks(range(ym.shape[1]))
+    host_ax.set_xticklabels(my_vars_names, fontsize=20)
+    host_ax.tick_params(axis="x", which="major", pad=7)
+
+    # Make the curves
+    host_ax.spines.right.set_visible(False)
+    host_ax.xaxis.tick_top()
+    for j in range(ym.shape[0]):
+        verts = list(zip([x for x in np.linspace(0, len(ym) - 1, len(ym) * 3 - 2, endpoint=True)],
+                         np.repeat(zs[j, :], 3)[1:-1]))
+        codes = [Path.MOVETO] + [Path.CURVE4 for _ in range(len(verts) - 1)]
+        path = Path(verts, codes)
+        color = cmap_continuous(metric_normalized[j])  # Color based on normalized metric
+        if metric_normalized[j] == 1:
+            patch = patches.PathPatch(path, facecolor="none", lw=7, alpha=0.7, edgecolor=color)
+        else:
+            patch = patches.PathPatch(path, facecolor="none", lw=3, alpha=0.7, edgecolor=color)
+        host_ax.add_patch(patch)
+
+    # Identify the position of the Accuracy axis
+    # This is the last axis in your plot
+    accuracy_axis_index = len(my_vars_names) - 1
+    orig_pos = axes[accuracy_axis_index].get_position()
+
+    # Create a ScalarMappable object for the color bar
+    sm = cm.ScalarMappable(cmap=cmap_continuous, norm=plt.Normalize(vmin=metric.min(), vmax=metric.max()))
+    sm.set_array([])  # You can set an empty array because the color bar doesn't need actual data
+
+    # Hide the original Accuracy axis
+    axes[accuracy_axis_index].set_visible(False)
+
+    # Calculate the position for the color bar
+    cbar_width = 0.02
+    cbar_pos = [orig_pos.x0 + orig_pos.width + cbar_width * 1.1-0.01, orig_pos.y0 / 1.8, cbar_width, orig_pos.height * 1.1]
+
+    # Create a new axes for the color bar at the calculated position and add it to the figure
+    cbar_ax = fig.add_axes(cbar_pos)
+    cbar = plt.colorbar(sm, cax=cbar_ax, orientation='vertical')
+    cbar.ax.tick_params(labelsize=12)  # Adjust font size of color bar ticks
+    # plt.tight_layout()
+    plt.savefig(f'{title}.png')
+    plt.show()  # Display the plot
+
+# Example usage:
+# table4 = pd.read_csv('your_data.csv')
+# parallel_plot(df, 'perplexity', 'title', ['batch_size', 'embedding_dim', 'units', 'layers'], ["Batch","Embedding Dimension", "Units", "Layers"])
+parallel_plot(df, 'perplexity', 'title', ['embedding_dim','units', 'layers'], ["Embedding Dimension", "Units", "Layers"])
+
+
